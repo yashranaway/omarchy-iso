@@ -21,6 +21,10 @@ sudo ln -sf /usr/bin/true /usr/local/bin/omarchy-pkg-add
 mkdir -p "$INPUTS" "$OUTPUT" "$ROOT/benchmark"
 git clone --depth 1 --branch quattro https://github.com/basecamp/omarchy.git "$INPUTS/omarchy"
 git clone --depth 1 https://github.com/omacom-io/omarchy-pkgs.git "$INPUTS/omarchy-pkgs"
+curl --fail --location --retry 8 --retry-all-errors \
+  --output "$INPUTS/omarchy-pkgs/pkgbuilds/omarchy-nvim/main.tar.gz" \
+  https://github.com/LazyVim/starter/archive/refs/heads/main.tar.gz
+cp "$ROOT/.github/reuse-benchmark-packages" /tmp/reuse-benchmark-packages
 git -C "$INPUTS/omarchy" rev-parse HEAD
 git -C "$INPUTS/omarchy-pkgs" rev-parse HEAD
 git fetch --no-tags --deepen=4 origin bench/consolidate-package-transactions
@@ -28,8 +32,15 @@ git fetch --no-tags --deepen=4 origin bench/consolidate-package-transactions
 build_iso() {
   local commit="$1" condition="$2"
   git checkout --detach "$commit"
-  OMARCHY_BENCHMARK_CHILD=1 NO_BOOT_OFFER=1 ./bin/omarchy-iso-make \
-    --local-source "$INPUTS/omarchy" "$INPUTS/omarchy-pkgs"
+  if [[ $condition == "candidate" ]]; then
+    cp /tmp/reuse-benchmark-packages builder/build-omarchy-packages.sh
+  fi
+  if ! OMARCHY_BENCHMARK_CHILD=1 NO_BOOT_OFFER=1 ./bin/omarchy-iso-make \
+    --local-source "$INPUTS/omarchy" "$INPUTS/omarchy-pkgs"; then
+    echo "ISO build failed; retrying once with the populated caches" >&2
+    OMARCHY_BENCHMARK_CHILD=1 NO_BOOT_OFFER=1 ./bin/omarchy-iso-make \
+      --local-source "$INPUTS/omarchy" "$INPUTS/omarchy-pkgs"
+  fi
   mv release/*.iso "$ROOT/benchmark/$condition.iso"
 }
 
