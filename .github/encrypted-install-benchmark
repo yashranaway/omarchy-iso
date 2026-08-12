@@ -23,6 +23,7 @@ git clone --depth 1 --branch quattro https://github.com/basecamp/omarchy.git "$I
 git clone --depth 1 https://github.com/omacom-io/omarchy-pkgs.git "$INPUTS/omarchy-pkgs"
 git -C "$INPUTS/omarchy" rev-parse HEAD
 git -C "$INPUTS/omarchy-pkgs" rev-parse HEAD
+git fetch --no-tags --deepen=4 origin bench/consolidate-package-transactions
 
 build_iso() {
   local commit="$1" condition="$2"
