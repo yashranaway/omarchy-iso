@@ -9,7 +9,7 @@ Phase ordering (full-disk and protected/pre-mounted):
                              pre_mounted_config; no-op for full-disk installs
     arch_install_system    → one archinstall flow for partition/mount-or-use,
                              base install, early Omarchy packages, Limine setup,
-                             useradd, runtime Omarchy packages, fstab
+                             runtime Omarchy packages, useradd, fstab
     configure_hibernation  → root-owned swap/resume drop-ins
     run_system_finalizer   → arch-chroot root omarchy-apply-system, including Snapper
     finalize_limine_boot   → final Limine config/UKI build after hardware drop-ins
@@ -118,9 +118,8 @@ def _omarchy_nvim_package() -> str:
 
 # Packages installed BEFORE useradd. The selected omarchy-settings package and
 # omarchy-nvim populate /etc/skel so the user's home gets seeded correctly, and
-# omarchy-settings also ships the limine/snapper configs. Target-side setup
-# commands are installed later by the selected Omarchy runtime package and
-# executed in chroot.
+# omarchy-settings also ships the limine/snapper configs. The selected Omarchy
+# runtime package supplies target-side setup commands that execute in chroot.
 EARLY_BOOTSTRAP_BASE_PACKAGES = [
     "base-devel",
     "git",
@@ -278,7 +277,7 @@ def arch_install_system(ctx: InstallContext) -> None:
                 installer.setup_swap(algo=config.swap.algorithm)
                 _drop_archinstall_zram_conf(ctx)
 
-            _install_early_packages(installer)
+            _install_omarchy_packages(ctx, installer)
             _configure_limine_boot(ctx, installer, config)
 
             info("› creating user (with /etc/skel populated)")
@@ -289,16 +288,6 @@ def arch_install_system(ctx: InstallContext) -> None:
                 info("› installing archinstall application selections")
                 arch.install_applications(installer, config)
 
-            info("› installing Omarchy runtime + omarchy-base.packages")
-            installer.add_additional_packages(_runtime_package_list(ctx))
-
-            # Tailscale is bundled in the offline mirror but only installed
-            # when an autoinstall drive staged an auth key; must happen here,
-            # while the mirror is still bind-mounted, not in the phase that
-            # configures the join.
-            if ctx.tailscale_authkey_path is not None:
-                info("› installing tailscale (auth key staged for first boot)")
-                installer.add_additional_packages(["tailscale"])
         finally:
             _unmask_mkinitcpio_pacman_hooks(ctx)
             _unmount_offline_package_cache(ctx)
@@ -624,18 +613,26 @@ def _drop_archinstall_zram_conf(ctx: InstallContext) -> None:
     zram_conf.unlink(missing_ok=True)
 
 
-def _install_early_packages(installer) -> None:
-    bootstrap_packages = _early_bootstrap_packages()
-    user_seed_packages = _early_user_seed_packages()
+def _install_omarchy_packages(ctx: InstallContext, installer) -> None:
+    # LuaRocks must finish before omarchy-nvim pulls in lua51-lpeg, but the
+    # bootstrap packages need no transaction of their own. Likewise, the
+    # runtime has no ordering dependency on user creation: install it alongside
+    # the user seed so /etc/skel is complete before create_users without paying
+    # for another pacman transaction.
+    prerequisites = [*_early_bootstrap_packages(), *EARLY_LUAROCKS_PACKAGES]
+    user_system = [*_early_user_seed_packages(), *_runtime_package_list(ctx)]
 
-    info(f"› installing early Omarchy packages: {', '.join(bootstrap_packages)}")
-    installer.add_additional_packages(bootstrap_packages)
+    # Tailscale is bundled in the offline mirror but only installed when an
+    # autoinstall drive staged an auth key. Include it in the runtime transaction
+    # while that mirror is still mounted.
+    if ctx.tailscale_authkey_path is not None:
+        user_system.append("tailscale")
 
-    info(f"› installing LuaRocks prerequisites: {', '.join(EARLY_LUAROCKS_PACKAGES)}")
-    installer.add_additional_packages(EARLY_LUAROCKS_PACKAGES)
+    info(f"› installing Omarchy prerequisites: {', '.join(prerequisites)}")
+    installer.add_additional_packages(prerequisites)
 
-    info(f"› installing user seed packages: {', '.join(user_seed_packages)}")
-    installer.add_additional_packages(user_seed_packages)
+    info(f"› installing Omarchy user seed + runtime: {', '.join(user_system)}")
+    installer.add_additional_packages(user_system)
 
 
 def _mount_offline_package_cache(ctx: InstallContext) -> None:
