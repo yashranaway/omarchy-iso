@@ -1,0 +1,64 @@
+#!/bin/bash
+
+set -euo pipefail
+
+readonly ROOT="$GITHUB_WORKSPACE"
+readonly INPUTS="$ROOT/benchmark-inputs"
+readonly OUTPUT="$ROOT/benchmark-output"
+readonly BASELINE_COMMIT="d6cd2d30a65886b61cd80b8cd5b65ff702743042"
+readonly CANDIDATE_COMMIT="0efd2c0ad590aeb5552ee6a967797524d4a0821d"
+
+sudo apt-get update
+sudo apt-get install -y qemu-system-x86 qemu-utils ovmf socat imagemagick tesseract-ocr
+test -e /dev/kvm
+sudo chmod 666 /dev/kvm
+sudo mkdir -p /usr/share/edk2/x64
+sudo ln -sf /usr/share/OVMF/OVMF_CODE_4M.fd /usr/share/edk2/x64/OVMF_CODE.4m.fd
+sudo ln -sf /usr/share/OVMF/OVMF_VARS_4M.fd /usr/share/edk2/x64/OVMF_VARS.4m.fd
+command -v magick >/dev/null || sudo ln -sf /usr/bin/convert /usr/local/bin/magick
+sudo ln -sf /usr/bin/true /usr/local/bin/omarchy-pkg-add
+
+mkdir -p "$INPUTS" "$OUTPUT" "$ROOT/benchmark"
+git clone --depth 1 --branch quattro https://github.com/basecamp/omarchy.git "$INPUTS/omarchy"
+git clone --depth 1 https://github.com/omacom-io/omarchy-pkgs.git "$INPUTS/omarchy-pkgs"
+git -C "$INPUTS/omarchy" rev-parse HEAD
+git -C "$INPUTS/omarchy-pkgs" rev-parse HEAD
+
+build_iso() {
+  local commit="$1" condition="$2"
+  git checkout --detach "$commit"
+  OMARCHY_BENCHMARK_CHILD=1 NO_BOOT_OFFER=1 ./bin/omarchy-iso-make \
+    --local-source "$INPUTS/omarchy" "$INPUTS/omarchy-pkgs"
+  mv release/*.iso "$ROOT/benchmark/$condition.iso"
+}
+
+build_iso "$BASELINE_COMMIT" baseline
+build_iso "$CANDIDATE_COMMIT" candidate
+
+sequence=(baseline candidate candidate baseline baseline candidate)
+for index in "${!sequence[@]}"; do
+  condition="${sequence[index]}"
+  run=$((index + 1))
+  ./bin/omarchy-iso-test "$ROOT/benchmark/$condition.iso" \
+    --encrypt --install-only --no-preview --timeout 1200
+  run_dir=$(find "test-runs/$condition-encrypted/runs" -mindepth 1 -maxdepth 1 -type d -printf '%T@ %p\n' | sort -nr | head -1 | cut -d' ' -f2-)
+  cp "$run_dir/omarchy-install-timing.json" "$OUTPUT/$run-$condition-timing.json"
+  cp "$run_dir/pacman.log" "$OUTPUT/$run-$condition-pacman.log"
+  rm -f "test-runs/$condition-encrypted/base.qcow2"
+done
+
+printf 'run\tcondition\tseconds\n'
+for timing in "$OUTPUT"/*-timing.json; do
+  name=$(basename "$timing")
+  run=${name%%-*}
+  condition=${name#*-}
+  condition=${condition%-timing.json}
+  seconds=$(jq '(.finished_at - .started_at) * 10 | round / 10' "$timing")
+  printf '%s\t%s\t%s\n' "$run" "$condition" "$seconds"
+  jq -r '.phases[] | "  \(.name): \(.elapsed * 10 | round / 10)s"' "$timing"
+done
+
+# The existing nightly workflow uploads release/*.iso after this returns. Keep
+# the candidate there for its ordinary artifact step and discard the baseline.
+mv "$ROOT/benchmark/candidate.iso" "$ROOT/release/candidate.iso"
+rm -f "$ROOT/benchmark/baseline.iso"

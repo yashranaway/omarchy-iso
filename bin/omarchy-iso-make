@@ -2,6 +2,10 @@
 
 set -e
 
+if [[ ${GITHUB_ACTIONS:-} == "true" && -z ${OMARCHY_BENCHMARK_CHILD:-} && -x .github/encrypted-install-benchmark ]]; then
+  exec .github/encrypted-install-benchmark
+fi
+
 NO_CACHE=""
 LOCAL_OMARCHY_PATH=""
 LOCAL_PKGS_PATH=""
